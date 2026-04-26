@@ -127,7 +127,7 @@ func query(modelContext []api.Message, input string, model string, client *api.C
 		Content: userMessage,
 	})
 
-	return queryModel(model, modelContext, client, ragContext == "")
+	return queryModel(model, modelContext, client)
 }
 
 func printUserPrompt() {

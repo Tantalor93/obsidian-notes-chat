@@ -117,7 +117,7 @@ func indexDirectory(client *api.Client, dir string) (*VectorStore, error) {
 			return err
 		}
 
-		chunks := chunkText(string(content), 500)
+		chunks := chunkTextWithOverlap(string(content), 1000, 200)
 		color.New(color.Faint).Printf("\tindexing %s (%d chunks)...\n", path, len(chunks))
 		for _, chunk := range chunks {
 			textToEmbed := fmt.Sprintf(docPrefix+"%s\n\n%s", filename, chunk)
@@ -138,21 +138,38 @@ func indexDirectory(client *api.Client, dir string) (*VectorStore, error) {
 	return store, err
 }
 
-func chunkText(text string, chunkSize int) []string {
+func chunkTextWithOverlap(text string, chunkSize int, overlap int) []string {
 	var chunks []string
 	lines := strings.Split(text, "\n")
 
-	current := ""
+	var current []string
+	currentLen := 0
+
 	for _, line := range lines {
-		if len(current)+len(line) > chunkSize && current != "" {
-			chunks = append(chunks, current)
-			current = ""
+		current = append(current, line)
+		currentLen += len(line) + 1 // +1 for newline
+
+		if currentLen >= chunkSize {
+			chunks = append(chunks, strings.Join(current, "\n"))
+
+			var overlapLines []string
+			overlapLen := 0
+			for i := len(current) - 1; i >= 0; i-- {
+				overlapLen += len(current[i]) + 1
+				overlapLines = append([]string{current[i]}, overlapLines...)
+				if overlapLen >= overlap {
+					break
+				}
+			}
+			current = overlapLines
+			currentLen = overlapLen
 		}
-		current += line + "\n"
 	}
-	if current != "" {
-		chunks = append(chunks, current)
+
+	if len(current) > 0 {
+		chunks = append(chunks, strings.Join(current, "\n"))
 	}
+
 	return chunks
 }
 
@@ -162,7 +179,7 @@ func enrichContext(client *api.Client, store *VectorStore, question string) (str
 		return "", nil
 	}
 
-	relevant := store.Search(queryEmbedding, 3)
+	relevant := store.Search(queryEmbedding, 5)
 	if len(relevant) == 0 {
 		return "", nil
 	}
