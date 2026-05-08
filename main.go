@@ -60,7 +60,7 @@ Rules:
 		fmt.Println("-----")
 
 		ragContext := ""
-		var sources []string
+		var sources []ScoredDocument
 		if store != nil {
 			ragContext, sources = enrichContext(client, store, input)
 		}
@@ -75,8 +75,8 @@ Rules:
 		printModelPrompt()
 		fmt.Println(response)
 		for _, s := range sources {
-			obsidianLink := sourceToObsidianLink(s, "obsidian-vault")
-			color.New(color.Faint).Printf("  - %s\n", obsidianLink)
+			obsidianLink := sourceToObsidianLink(s.Document.Source, "obsidian-vault")
+			color.New(color.Faint).Printf("  - %s (score: %.4f)\n", obsidianLink, s.Score)
 		}
 		fmt.Println("-----")
 		printUserPrompt()

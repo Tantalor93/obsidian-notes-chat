@@ -20,6 +20,11 @@ const (
 	queryPrefix    = "search_query: "
 )
 
+type ScoredDocument struct {
+	Document Document
+	Score    float32
+}
+
 type Document struct {
 	Content   string
 	Source    string
@@ -34,19 +39,14 @@ func (vs *VectorStore) Add(doc Document) {
 	vs.docs = append(vs.docs, doc)
 }
 
-func (vs *VectorStore) Search(queryEmbedding []float32, topK int) []Document {
-	type scored struct {
-		doc   Document
-		score float32
-	}
-
-	scores := make([]scored, len(vs.docs))
+func (vs *VectorStore) Search(queryEmbedding []float32, topK int) []ScoredDocument {
+	scores := make([]ScoredDocument, len(vs.docs))
 	for i, doc := range vs.docs {
-		scores[i] = scored{doc, cosineSimilarity(queryEmbedding, doc.Embedding)}
+		scores[i] = ScoredDocument{doc, cosineSimilarity(queryEmbedding, doc.Embedding)}
 	}
 
 	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
+		return scores[i].Score > scores[j].Score
 	})
 
 	k := topK
@@ -54,9 +54,9 @@ func (vs *VectorStore) Search(queryEmbedding []float32, topK int) []Document {
 		k = len(scores)
 	}
 
-	result := make([]Document, k)
+	result := make([]ScoredDocument, k)
 	for i := range result {
-		result[i] = scores[i].doc
+		result[i] = scores[i]
 	}
 	return result
 }
@@ -173,7 +173,7 @@ func chunkTextWithOverlap(text string, chunkSize int, overlap int) []string {
 	return chunks
 }
 
-func enrichContext(client *api.Client, store *VectorStore, question string) (string, []string) {
+func enrichContext(client *api.Client, store *VectorStore, question string) (string, []ScoredDocument) {
 	queryEmbedding, err := getEmbedding(client, queryPrefix+question)
 	if err != nil {
 		return "", nil
@@ -185,16 +185,14 @@ func enrichContext(client *api.Client, store *VectorStore, question string) (str
 	}
 
 	ragContext := "\n\nRelevant parts:\n\n"
-	var sources []string
 	seen := map[string]bool{}
 
 	for _, doc := range relevant {
-		ragContext += fmt.Sprintf("// File: %s\n%s\n\n", doc.Source, doc.Content)
-		if !seen[doc.Source] {
-			sources = append(sources, doc.Source)
-			seen[doc.Source] = true
+		ragContext += fmt.Sprintf("// File: %s\n%s\n\n", doc.Document.Source, doc.Document.Content)
+		if !seen[doc.Document.Source] {
+			seen[doc.Document.Source] = true
 		}
 	}
 
-	return ragContext, sources
+	return ragContext, relevant
 }
