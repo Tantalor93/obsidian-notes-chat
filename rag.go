@@ -173,6 +173,8 @@ func chunkTextWithOverlap(text string, chunkSize int, overlap int) []string {
 	return chunks
 }
 
+const minRelevanceScore = float32(0.6)
+
 func enrichContext(client *api.Client, store *VectorStore, question string) (string, []ScoredDocument) {
 	queryEmbedding, err := getEmbedding(client, queryPrefix+question)
 	if err != nil {
@@ -180,19 +182,25 @@ func enrichContext(client *api.Client, store *VectorStore, question string) (str
 	}
 
 	relevant := store.Search(queryEmbedding, 5)
-	if len(relevant) == 0 {
-		return "", nil
-	}
 
 	ragContext := "\n\nRelevant parts:\n\n"
 	seen := map[string]bool{}
+	var used []ScoredDocument
 
 	for _, doc := range relevant {
+		if doc.Score < minRelevanceScore {
+			continue
+		}
 		ragContext += fmt.Sprintf("// File: %s\n%s\n\n", doc.Document.Source, doc.Document.Content)
 		if !seen[doc.Document.Source] {
 			seen[doc.Document.Source] = true
 		}
+		used = append(used, doc)
 	}
 
-	return ragContext, relevant
+	if len(used) == 0 {
+		return "", nil
+	}
+
+	return ragContext, used
 }

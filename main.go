@@ -84,13 +84,13 @@ Rules:
 }
 
 func sourceToObsidianLink(path string, vault string) string {
-     filename := strings.TrimSuffix(filepath.Base(path), ".md")
-    
-    // URL encode
-    encodedVault := url.PathEscape(vault)
-    encodedFile := url.PathEscape(filename)
-    
-    return fmt.Sprintf("obsidian://open?vault=%s&file=%s", encodedVault, encodedFile)
+	filename := strings.TrimSuffix(filepath.Base(path), ".md")
+
+	// URL encode
+	encodedVault := url.PathEscape(vault)
+	encodedFile := url.PathEscape(filename)
+
+	return fmt.Sprintf("obsidian://open?vault=%s&file=%s", encodedVault, encodedFile)
 }
 
 func initRag(vaultDir *string, err error, client *api.Client) *VectorStore {
@@ -117,17 +117,30 @@ func query(modelContext []api.Message, input string, model string, client *api.C
 	)
 	defer progress.Finish()
 
-	userMessage := input
+	// Build enriched message for the model call, but do NOT persist it in history.
+	// This prevents previous RAG contexts from accumulating in the conversation window.
+	userMessageForModel := input
 	if ragContext != "" {
-		userMessage = ragContext + "\n\nQuestion: " + input
+		userMessageForModel = ragContext + "\n\nQuestion: " + input
 	}
 
-	modelContext = append(modelContext, api.Message{
+	callContext := append(modelContext, api.Message{
 		Role:    "user",
-		Content: userMessage,
+		Content: userMessageForModel,
 	})
 
-	return queryModel(model, modelContext, client)
+	_, response, err := queryModel(model, callContext, client)
+	if err != nil {
+		return modelContext, "", err
+	}
+
+	// Store only the bare question and the model reply in history.
+	modelContext = append(modelContext,
+		api.Message{Role: "user", Content: input},
+		api.Message{Role: "assistant", Content: response},
+	)
+
+	return modelContext, response, nil
 }
 
 func printUserPrompt() {
