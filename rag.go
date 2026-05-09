@@ -33,32 +33,59 @@ type Document struct {
 
 type VectorStore struct {
 	docs []Document
+	bm25 *BM25Index
+}
+
+func newVectorStore() *VectorStore {
+	return &VectorStore{bm25: newBM25Index()}
 }
 
 func (vs *VectorStore) Add(doc Document) {
 	vs.docs = append(vs.docs, doc)
+	vs.bm25.Add(doc.Content)
 }
 
-func (vs *VectorStore) Search(queryEmbedding []float32, topK int) []ScoredDocument {
-	scores := make([]ScoredDocument, len(vs.docs))
-	for i, doc := range vs.docs {
-		scores[i] = ScoredDocument{doc, cosineSimilarity(queryEmbedding, doc.Embedding)}
+// Search performs hybrid retrieval using Reciprocal Rank Fusion (RRF) over
+// dense cosine-similarity ranks and sparse BM25 ranks.
+func (vs *VectorStore) Search(queryEmbedding []float32, query string, topK int) []ScoredDocument {
+	n := len(vs.docs)
+	if n == 0 {
+		return nil
 	}
 
-	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].Score > scores[j].Score
+	// Compute 1-based dense ranks (highest cosine similarity = rank 1).
+	denseRanks := make([]int, n)
+	{
+		order := make([]int, n)
+		for i := range order {
+			order[i] = i
+		}
+		sort.Slice(order, func(a, b int) bool {
+			return cosineSimilarity(queryEmbedding, vs.docs[order[a]].Embedding) >
+				cosineSimilarity(queryEmbedding, vs.docs[order[b]].Embedding)
+		})
+		for rank, idx := range order {
+			denseRanks[idx] = rank + 1
+		}
+	}
+
+	// Compute 1-based BM25 ranks.
+	sparseRanks := vs.bm25.ranks(tokenize(query))
+
+	// Fuse with Reciprocal Rank Fusion: score = 1/(k+r_dense) + 1/(k+r_sparse).
+	results := make([]ScoredDocument, n)
+	for i, doc := range vs.docs {
+		rrf := 1.0/float64(rrfK+denseRanks[i]) + 1.0/float64(rrfK+sparseRanks[i])
+		results[i] = ScoredDocument{doc, float32(rrf)}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
 	})
 
-	k := topK
-	if k > len(scores) {
-		k = len(scores)
+	if topK > n {
+		topK = n
 	}
-
-	result := make([]ScoredDocument, k)
-	for i := range result {
-		result[i] = scores[i]
-	}
-	return result
+	return results[:topK]
 }
 
 func cosineSimilarity(a, b []float32) float32 {
@@ -93,7 +120,7 @@ func getEmbedding(client *api.Client, text string) ([]float32, error) {
 }
 
 func indexDirectory(client *api.Client, dir string) (*VectorStore, error) {
-	store := &VectorStore{}
+	store := newVectorStore()
 
 	color.New(color.Faint).Printf("Indexing %s...\n", dir)
 
@@ -173,24 +200,19 @@ func chunkTextWithOverlap(text string, chunkSize int, overlap int) []string {
 	return chunks
 }
 
-const minRelevanceScore = float32(0.6)
-
 func enrichContext(client *api.Client, store *VectorStore, question string) (string, []ScoredDocument) {
 	queryEmbedding, err := getEmbedding(client, queryPrefix+question)
 	if err != nil {
 		return "", nil
 	}
 
-	relevant := store.Search(queryEmbedding, 5)
+	relevant := store.Search(queryEmbedding, question, 5)
 
 	ragContext := "\n\nRelevant parts:\n\n"
 	seen := map[string]bool{}
 	var used []ScoredDocument
 
 	for _, doc := range relevant {
-		if doc.Score < minRelevanceScore {
-			continue
-		}
 		ragContext += fmt.Sprintf("// File: %s\n%s\n\n", doc.Document.Source, doc.Document.Content)
 		if !seen[doc.Document.Source] {
 			seen[doc.Document.Source] = true
