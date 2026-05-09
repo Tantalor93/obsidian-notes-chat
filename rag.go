@@ -32,8 +32,9 @@ type Document struct {
 }
 
 type VectorStore struct {
-	docs []Document
-	bm25 *BM25Index
+	docs  []Document
+	norms []float32 // precomputed L2 norms for each document embedding
+	bm25  *BM25Index
 }
 
 func newVectorStore() *VectorStore {
@@ -42,6 +43,7 @@ func newVectorStore() *VectorStore {
 
 func (vs *VectorStore) Add(doc Document) {
 	vs.docs = append(vs.docs, doc)
+	vs.norms = append(vs.norms, l2Norm(doc.Embedding))
 	vs.bm25.Add(doc.Content)
 }
 
@@ -54,19 +56,23 @@ func (vs *VectorStore) Search(queryEmbedding []float32, query string, topK int) 
 	}
 
 	// Compute 1-based dense ranks (highest cosine similarity = rank 1).
+	// Query norm is constant across all comparisons so compute it once.
+	queryNorm := l2Norm(queryEmbedding)
 	denseRanks := make([]int, n)
-	{
-		order := make([]int, n)
-		for i := range order {
-			order[i] = i
-		}
-		sort.Slice(order, func(a, b int) bool {
-			return cosineSimilarity(queryEmbedding, vs.docs[order[a]].Embedding) >
-				cosineSimilarity(queryEmbedding, vs.docs[order[b]].Embedding)
-		})
-		for rank, idx := range order {
-			denseRanks[idx] = rank + 1
-		}
+
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		// Cosine similarity: dot(q, d) / (|q| * |d|). Ranges 0–1; higher = more semantically similar.
+		// queryNorm is precomputed once above; vs.norms[i] was precomputed at index time.
+		scoreA := dotProduct(queryEmbedding, vs.docs[order[a]].Embedding) / (queryNorm * vs.norms[order[a]])
+		scoreB := dotProduct(queryEmbedding, vs.docs[order[b]].Embedding) / (queryNorm * vs.norms[order[b]])
+		return scoreA > scoreB
+	})
+	for rank, idx := range order {
+		denseRanks[idx] = rank + 1
 	}
 
 	// Compute 1-based BM25 ranks.
@@ -88,17 +94,20 @@ func (vs *VectorStore) Search(queryEmbedding []float32, query string, topK int) 
 	return results[:topK]
 }
 
-func cosineSimilarity(a, b []float32) float32 {
-	var dot, normA, normB float32
+func dotProduct(a, b []float32) float32 {
+	var sum float32
 	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
+		sum += a[i] * b[i]
 	}
-	if normA == 0 || normB == 0 {
-		return 0
+	return sum
+}
+
+func l2Norm(v []float32) float32 {
+	var sum float32
+	for _, x := range v {
+		sum += x * x
 	}
-	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
+	return float32(math.Sqrt(float64(sum)))
 }
 
 func getEmbedding(client *api.Client, text string) ([]float32, error) {
